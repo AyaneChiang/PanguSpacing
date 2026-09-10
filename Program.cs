@@ -1,6 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,6 +44,7 @@ internal sealed class TrayContext : ApplicationContext
 
     private readonly NotifyIcon _icon;
     private readonly HotkeyWindow _hotkey;
+    private readonly AppSettings _settings = AppSettings.Load();
     private bool _busy;
 
     public TrayContext()
@@ -52,6 +56,33 @@ internal sealed class TrayContext : ApplicationContext
         menu.Items.Add("轉換選取的文字  (Ctrl+Alt+P)", null, (_, _) => _ = ConvertSelectionAsync());
         menu.Items.Add("只轉換剪貼簿內容", null, (_, _) => ConvertClipboardOnly());
         menu.Items.Add(new ToolStripSeparator());
+
+        var tidy = new ToolStripMenuItem("清理連續空白與全形標點旁的空白")
+        {
+            CheckOnClick = true,
+            Checked = _settings.Pangu.TidySpaces
+        };
+        tidy.CheckedChanged += (_, _) =>
+        {
+            _settings.Pangu.TidySpaces = tidy.Checked;
+            _settings.Save();
+        };
+        menu.Items.Add(tidy);
+
+        var joinCjk = new ToolStripMenuItem("移除中文字之間的空白（韓文除外）")
+        {
+            CheckOnClick = true,
+            Checked = _settings.Pangu.RemoveSpaceBetweenCjk
+        };
+        joinCjk.CheckedChanged += (_, _) =>
+        {
+            _settings.Pangu.RemoveSpaceBetweenCjk = joinCjk.Checked;
+            _settings.Save();
+        };
+        menu.Items.Add(joinCjk);
+
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("開啟設定檔…", null, (_, _) => OpenSettingsFile());
         menu.Items.Add("結束", null, (_, _) => ExitThread());
 
         _icon = new NotifyIcon
@@ -64,6 +95,20 @@ internal sealed class TrayContext : ApplicationContext
 
         if (!_hotkey.Register(MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P))
             Notify("熱鍵 Ctrl+Alt+P 註冊失敗，可能已被其他程式佔用。");
+    }
+
+    /// <summary>用系統預設的 .json 編輯器打開設定檔，讓使用者改 PasteDelayMs 之類的值。</summary>
+    private void OpenSettingsFile()
+    {
+        try
+        {
+            if (!File.Exists(AppSettings.FilePath)) _settings.Save();
+            Process.Start(new ProcessStartInfo(AppSettings.FilePath) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Notify("無法開啟設定檔：" + ex.Message);
+        }
     }
 
     /// <summary>
@@ -114,7 +159,7 @@ internal sealed class TrayContext : ApplicationContext
                 return;
             }
 
-            string result = Pangu.Spacing(text);
+            string result = Pangu.Spacing(text, _settings.Pangu);
             if (result == text)
             {
                 Notify("這段文字已經有盤古之白了。");
@@ -127,7 +172,7 @@ internal sealed class TrayContext : ApplicationContext
             Native.SendCtrlKey(Native.VK_V);
 
             // 等目標程式真的把剪貼簿讀完，再還原原本的內容
-            await Task.Delay(250);
+            await Task.Delay(_settings.PasteDelayMs);
             if (backup is not null) Clip.TrySetText(backup);
         }
         catch (Exception ex)
@@ -150,7 +195,7 @@ internal sealed class TrayContext : ApplicationContext
             return;
         }
 
-        string result = Pangu.Spacing(text);
+        string result = Pangu.Spacing(text, _settings.Pangu);
         if (result == text)
         {
             Notify("剪貼簿內容已經有盤古之白了。");
@@ -191,12 +236,89 @@ internal sealed class TrayContext : ApplicationContext
 // ---------------------------------------------------------------------------
 // 盤古之白轉換規則
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 設定檔：%AppData%\PanguSpacing\settings.json
+// ---------------------------------------------------------------------------
+internal sealed class AppSettings
+{
+    public static readonly string FilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "PanguSpacing", "settings.json");
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        ReadCommentHandling = JsonCommentHandling.Skip,   // 讓使用者可以在檔案裡寫註解
+        AllowTrailingCommas = true
+    };
+
+    /// <summary>轉換規則的開關。</summary>
+    public PanguOptions Pangu { get; set; } = new();
+
+    /// <summary>
+    /// 送出 Ctrl+V 之後、還原剪貼簿之前要等多久（毫秒）。
+    /// 貼上後剪貼簿內容不對，代表目標程式讀取較慢，把這個值調大。
+    /// </summary>
+    public int PasteDelayMs { get; set; } = 250;
+
+    public static AppSettings Load()
+    {
+        try
+        {
+            if (File.Exists(FilePath))
+            {
+                var loaded = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath), JsonOptions);
+                if (loaded is not null)
+                {
+                    loaded.Pangu ??= new PanguOptions();
+                    loaded.PasteDelayMs = Math.Clamp(loaded.PasteDelayMs, 50, 5000);
+                    return loaded;
+                }
+            }
+        }
+        catch
+        {
+            // 檔案壞掉或格式錯誤就當作沒有，用預設值繼續跑，不要讓程式起不來
+        }
+        return new AppSettings();
+    }
+
+    public void Save()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+            File.WriteAllText(FilePath, JsonSerializer.Serialize(this, JsonOptions));
+        }
+        catch
+        {
+            // 存不進去（唯讀、權限）不算致命錯誤，設定會在這次執行期間維持有效
+        }
+    }
+}
+
+internal sealed class PanguOptions
+{
+    /// <summary>連續空白縮成一個、移除全形標點前後的空白。風險低，預設開。</summary>
+    public bool TidySpaces { get; set; } = true;
+
+    /// <summary>移除中文字之間的空白。會破壞「台北 東京 大阪」這種清單，預設關。</summary>
+    public bool RemoveSpaceBetweenCjk { get; set; } = false;
+}
+
 internal static class Pangu
 {
     private const string Cjk =
         @"\p{IsCJKUnifiedIdeographs}\p{IsCJKUnifiedIdeographsExtensionA}" +
         @"\p{IsCJKCompatibilityIdeographs}\p{IsHiragana}\p{IsKatakana}" +
         @"\p{IsBopomofo}\p{IsHangulSyllables}";
+
+    // 移除字間空白時不含諺文：韓文靠空白分詞，拿掉會毀掉整句
+    private const string CjkNoHangul =
+        @"\p{IsCJKUnifiedIdeographs}\p{IsCJKUnifiedIdeographsExtensionA}" +
+        @"\p{IsCJKCompatibilityIdeographs}\p{IsHiragana}\p{IsKatakana}\p{IsBopomofo}";
+
+    private const string FullwidthPunct = "，。、；：？！「」『』（）《》〈〉【】…—～·";
 
     // 中文在前、半形英數或符號在後
     private static readonly Regex CjkThenAnsi =
@@ -206,12 +328,27 @@ internal static class Pangu
     private static readonly Regex AnsiThenCjk =
         new($@"([a-zA-Z0-9~!@#$%^&*\-+\\=|/.,:;?)\]}}>""'])([{Cjk}])", RegexOptions.Compiled);
 
+    // 兩個非空白字元之間夾了 2 個以上的空白或 Tab → 縮成 1 個
+    // 用 lookbehind 排除行首，避免把程式碼縮排或 Markdown 巢狀清單壓平
+    private static readonly Regex MultiSpace =
+        new(@"(?<=\S)[ \t]{2,}(?=\S)", RegexOptions.Compiled);
+
+    // 全形標點前後的空白
+    private static readonly Regex SpaceAroundFullwidth =
+        new($@"[ \t]+(?=[{FullwidthPunct}])|(?<=[{FullwidthPunct}])[ \t]+", RegexOptions.Compiled);
+
+    // 中文字之間的空白（不含諺文）
+    private static readonly Regex SpaceBetweenCjk =
+        new($@"(?<=[{CjkNoHangul}])[ \t]+(?=[{CjkNoHangul}])", RegexOptions.Compiled);
+
     // 需要整段跳過的東西：網址、Windows 路徑、UNC 路徑
     private static readonly Regex Protected = new(
         @"(https?://\S+|ftp://\S+|[a-zA-Z]:\\[^\s""<>|]*|\\\\[^\s""<>|]+)",
         RegexOptions.Compiled);
 
-    public static string Spacing(string text)
+    public static string Spacing(string text) => Spacing(text, new PanguOptions());
+
+    public static string Spacing(string text, PanguOptions options)
     {
         if (string.IsNullOrEmpty(text)) return text;
 
@@ -222,6 +359,16 @@ internal static class Pangu
             kept.Add(m.Value);
             return $"\uE000{kept.Count - 1}\uE001";   // 私用區字元，正常文字不會出現
         });
+
+        // 先清理、再補空白。順序反過來的話補上的空白可能又被清掉。
+        if (options.RemoveSpaceBetweenCjk)
+            masked = SpaceBetweenCjk.Replace(masked, "");
+
+        if (options.TidySpaces)
+        {
+            masked = SpaceAroundFullwidth.Replace(masked, "");
+            masked = MultiSpace.Replace(masked, " ");
+        }
 
         masked = CjkThenAnsi.Replace(masked, "$1 $2");
         masked = AnsiThenCjk.Replace(masked, "$1 $2");

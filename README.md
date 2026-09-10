@@ -8,6 +8,9 @@
 我用C#寫了一個Windows程式    →    我用 C# 寫了一個 Windows 程式
 ```
 
+<!-- 建議放一張系統匣圖示與轉換前後的動圖 -->
+<!-- ![demo](docs/demo.gif) -->
+
 ## 特色
 
 - **全域可用**：在任何程式裡都能用，Line、Discord、Chrome、Word、記事本都吃
@@ -30,6 +33,25 @@
 | --- | --- |
 | 轉換選取的文字 | 跟快捷鍵一樣，不想記快捷鍵時用 |
 | 只轉換剪貼簿內容 | 已經自己按過 <kbd>Ctrl</kbd>+<kbd>C</kbd>，只想處理剪貼簿、等一下自己貼 |
+| 清理連續空白與全形標點旁的空白 | 預設開啟。`你好 ，世界  Hello` → `你好，世界 Hello` |
+| 移除中文字之間的空白（韓文除外） | 預設關閉。會把 `台北 東京 大阪` 黏成一串，請自行斟酌 |
+| 開啟設定檔… | 用預設編輯器打開 `settings.json` |
+
+## 設定檔
+
+設定存在 `%AppData%\PanguSpacing\settings.json`，選單上的開關會即時寫入。檔案裡另外有一個選單上沒有的值：
+
+```json
+{
+  "Pangu": {
+    "TidySpaces": true,
+    "RemoveSpaceBetweenCjk": false
+  },
+  "PasteDelayMs": 250
+}
+```
+
+`PasteDelayMs` 是貼上後、還原剪貼簿前的等待時間。如果轉換後貼出來的是舊內容，代表目標程式讀剪貼簿比較慢，把它調到 400～500。檔案允許 `//` 註解與結尾逗號，改壞了程式會忽略它並用預設值啟動。
 
 ## 運作原理
 
@@ -48,7 +70,7 @@ Windows 沒有提供讀取其他程式選取文字的 API，所以本程式借�
 需要 [.NET 10 SDK](https://dotnet.microsoft.com/download)，且只能在 Windows 上建置。
 
 ```bash
-git clone https://github.com/AyaneChiang/PanguSpacing.git
+git clone https://github.com/<your-name>/PanguSpacing.git
 cd PanguSpacing
 dotnet run
 ```
@@ -77,7 +99,7 @@ shell:startup
 - 貼上後某些程式的復原紀錄可能不如預期。
 - 防毒軟體可能因為全域熱鍵與 `SendInput` 的行為特徵而誤判，必要時請加入白名單。
 
-若貼上後剪貼簿內容不正確，通常是目標程式讀取剪貼簿較慢。把 `Program.cs` 裡的 `await Task.Delay(250)` 調大到 400～500 即可。
+若貼上後剪貼簿內容不正確，通常是目標程式讀取剪貼簿較慢。把設定檔裡的 `PasteDelayMs` 調大到 400～500 即可。
 
 ## 轉換規則
 
@@ -94,6 +116,14 @@ shell:startup
 - Windows 路徑（`C:\...`）與 UNC 路徑（`\\...`）
 
 規則實作在 `Program.cs` 的 `Pangu` 類別，可依需求調整。
+
+## 圖示
+
+系統匣圖示以「白」字設計，`make_icon.py` 為產生用的腳本。
+
+16 / 20 / 24px 是手工以矩形拼出的像素版本，讓每一道筆畫都對齊像素格；32px 以上才使用字型渲染。這是因為把字型直接縮到 16px 會因反鋸齒而糊成一團，在系統匣裡幾乎認不出來。
+
+另附 `pangu_space.ico`，右側多一道色條代表被插入的空格。想換用直接覆蓋 `pangu.ico` 即可，程式碼不需修改。
 
 ## 致謝
 
